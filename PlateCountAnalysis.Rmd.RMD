@@ -1,0 +1,41 @@
+---
+title: "PlateCountAnalysis"
+author: "Kevin Watanabe-Smith"
+date: "June 16, 2016"
+output: html_document
+---
+This is an attempt at analyzing the limiting dilution plating experiments in my
+ongoing Acquired Mutations project. No analysis has been performed to this point.
+
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+RawData <- read.csv("PlateSortResults.csv")
+summary(RawData)
+head(RawData)
+```
+
+We should start by getting an idea for Plating Efficiency (PE) from the WEHI wells
+
+```{r}
+WEHIonly <- RawData %>% filter(Media == "WEHI")
+summary(WEHIonly)
+WEHIcomplete <- WEHIonly %>% filter(!is.na(WellsGrown))
+summary(WEHIcomplete)
+Wpercents <- WEHIcomplete %>% transform(GrowthPercent = WellsGrown / WellsPlated)
+summary(Wpercents)
+hist(Wpercents$GrowthPercent)
+
+```
+
+Which conditions gave the low end of the growth percent?
+
+```{r}
+Wlowgrowth <- Wpercents %>% filter(GrowthPercent < 0.4)
+Wlowgrowth
+
+
+```
+
