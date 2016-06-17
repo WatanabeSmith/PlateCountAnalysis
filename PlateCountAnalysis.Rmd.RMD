@@ -11,10 +11,11 @@ ongoing Acquired Mutations project. No analysis has been performed to this point
 ```{r}
 library(dplyr)
 library(ggplot2)
+library(reshape2)
+library(stringr)
 
 RawData <- read.csv("PlateSortResults.csv")
 summary(RawData)
-head(RawData)
 ```
 
 We should start by getting an idea for Plating Efficiency (PE) from the WEHI wells
@@ -23,19 +24,92 @@ We should start by getting an idea for Plating Efficiency (PE) from the WEHI wel
 WEHIonly <- RawData %>% filter(Media == "WEHI")
 summary(WEHIonly)
 WEHIcomplete <- WEHIonly %>% filter(!is.na(WellsGrown))
-summary(WEHIcomplete)
 Wpercents <- WEHIcomplete %>% transform(GrowthPercent = WellsGrown / WellsPlated)
-summary(Wpercents)
 hist(Wpercents$GrowthPercent)
-
 ```
 
 Which conditions gave the low end of the growth percent?
 
 ```{r}
 Wlowgrowth <- Wpercents %>% filter(GrowthPercent < 0.4)
-Wlowgrowth
+Wlowgrowth[1,c(1,5,6,9,10)]
+```
 
+Comparing PE of cells plated at 2 days and 9 days post-infection
 
+```{r}
+Wpercents2 <- Wpercents %>% filter(DaysPostInfection == 2)
+Wpercents9 <- Wpercents %>% filter(DaysPostInfection == 9)
+summary(Wpercents2)
+summary(Wpercents9)
+hist(Wpercents2$GrowthPercent, xlim = c(0.2,1), xlab = "Percent Growth 2 days post-infection", breaks = 8, main = "WEHI 2 days post infection")
+curve(dnorm(x, mean = mean(Wpercents2$GrowthPercent), sd = sd(Wpercents2$GrowthPercent)), add = TRUE, col = "darkblue", lwd = 2)
+hist(Wpercents9$GrowthPercent, xlim = c(0.2,1), xlab = "Percent Growth 9 days post-infection", breaks = 8, main = "WEHI 9 days post infection")
+curve(dnorm(x, mean = mean(Wpercents9$GrowthPercent), sd = sd(Wpercents9$GrowthPercent)), add = TRUE, col = "darkblue", lwd = 2)
+
+```
+
+### **Conclusion: days post-infection do not seem to impact plating efficiency**
+
+Let's try the same approach with the R10 data
+
+```{r}
+AllPercents <- RawData %>% mutate(GrowthPercent = WellsGrown / WellsPlated)
+hist((AllPercents %>% filter(Media == "R10", CellsPerWell == 1, !is.na(WellsGrown)))$GrowthPercent, main = "All growth percentages in R10, 1 cell per well")
+hist((AllPercents %>% filter(Media == "R10", CellsPerWell == 100, !is.na(WellsGrown)))$GrowthPercent, main = "All growth percentages in R10, 100 cells per well")
+hist((AllPercents %>% filter(Media == "R10", CellsPerWell == 1000, !is.na(WellsGrown)))$GrowthPercent, main = "All growth percentages in R10, 1,000 cells per well")
+hist((AllPercents %>% filter(Media == "R10", CellsPerWell == 10000, !is.na(WellsGrown)))$GrowthPercent, main = "All growth percentages in R10, 10,000 cells per well")
+
+```
+
+For starters, we need to accomplish three points:
+1. We need to adjust WellsPlated for Censored
+2. We need to calculate GrowthPercent for all observations
+3. We need to adjust GrowthPercent for Plating Effiency
+```{r}
+CompleteData <- RawData %>% filter(!is.na(WellsPlated))
+CompleteData <- CompleteData %>% mutate(TrueWellsPlated = WellsPlated - WellsCensored)
+CompleteData <- CompleteData %>% select(-WellsPlated, -WellsCensored)
+head(CompleteData)
+
+CompleteData <- CompleteData %>% mutate(LineID = str_sub(LineID, 2)) %>% mutate(LineID = paste(LineNum_legacy, LineID, sep = ""))
+head(CompleteData)
+
+CompletePercent <- CompleteData %>% mutate(GrowthPercent = WellsGrown / TrueWellsPlated) %>% select(-WellsGrown, -TrueWellsPlated, -LineNum_legacy, -Transgene, -Mutation)
+head(CompletePercent)
+
+```
+
+Trying to reshape data to allow for better analysis
+
+```{r}
+#Change Media type to a single letter
+CompletePercent <- CompletePercent %>% mutate(Media = str_sub(Media,1,1))
+#Concatenate some identifiers into a single field, then drop unused columns
+CompleteConcat <- CompletePercent %>% mutate(Media_Day_Cells = paste(Media, DaysPostInfection, CellsPerWell, sep = "_")) %>% select(-PlateSeries, -DaysPostInfection, -CellsPerWell, -Media)
+#Change the identifier column into a factor (instead of character)
+CompleteConcat <- CompleteConcat %>% mutate(Media_Day_Cells = as.factor(Media_Day_Cells))
+head(CompleteConcat)
+
+#Recast the data with LineID as the rows, Media_Day_Cells as the columns, and GrowthPercent as the values
+CompleteTidy <- recast(CompleteConcat, LineID ~ Media_Day_Cells, id.var = c("LineID","Media_Day_Cells"), fun.aggregate = mean, na.rm = TRUE)
+head(CompleteTidy)
+#Output the results
+write.csv(CompleteTidy, file = "CompleteTidy.csv")
+```
+
+Going to do some scatter plots to look for covariance between PE on day2 and day9 samples
+
+```{r}
+plot(CompleteTidy$`W_2_1`, CompleteTidy$`W_9_1`, xlab = "PE 2 Days post infection", ylab = "PE 9 Days post infection", xlim = 0:1, ylim = 0:1)
+abline(a = 0, b = 1, col = "darkblue")
+```
+
+The PE of cell lines cluster, but not super related (IMO) which is expected.
+## Adjusting Growth Percentage for Plating Efficiency
+```{r}
+summary(CompleteTidy)
+CompleteTidy <- CompleteTidy %>% mutate(R_2_1 = R_2_1 / W_2_1)
+summary(CompleteTidy)
 ```
 
