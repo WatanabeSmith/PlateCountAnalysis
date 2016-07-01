@@ -20,7 +20,7 @@ summary(RawData)
 
 We should start by getting an idea for Plating Efficiency (PE) from the WEHI wells
 
-```{r}
+```{r, cache = TRUE}
 WEHIonly <- RawData %>% filter(Media == "WEHI")
 summary(WEHIonly)
 WEHIcomplete <- WEHIonly %>% filter(!is.na(WellsGrown))
@@ -30,14 +30,14 @@ hist(Wpercents$GrowthPercent)
 
 Which conditions gave the low end of the growth percent?
 
-```{r}
+```{r, cache = TRUE}
 Wlowgrowth <- Wpercents %>% filter(GrowthPercent < 0.4)
 Wlowgrowth[1,c(1,5,6,9,10)]
 ```
 
 Comparing PE of cells plated at 2 days and 9 days post-infection
 
-```{r}
+```{r, cache = TRUE}
 Wpercents2 <- Wpercents %>% filter(DaysPostInfection == 2)
 Wpercents9 <- Wpercents %>% filter(DaysPostInfection == 9)
 summary(Wpercents2)
@@ -53,7 +53,7 @@ curve(dnorm(x, mean = mean(Wpercents9$GrowthPercent), sd = sd(Wpercents9$GrowthP
 
 Let's try the same approach with the R10 data
 
-```{r}
+```{r, cache = TRUE}
 AllPercents <- RawData %>% mutate(GrowthPercent = WellsGrown / WellsPlated)
 hist((AllPercents %>% filter(Media == "R10", CellsPerWell == 1, !is.na(WellsGrown)))$GrowthPercent, main = "All growth percentages in R10, 1 cell per well")
 hist((AllPercents %>% filter(Media == "R10", CellsPerWell == 100, !is.na(WellsGrown)))$GrowthPercent, main = "All growth percentages in R10, 100 cells per well")
@@ -66,7 +66,7 @@ For starters, we need to accomplish three points:
 1. We need to adjust WellsPlated for Censored
 2. We need to calculate GrowthPercent for all observations
 3. We need to adjust GrowthPercent for Plating Effiency
-```{r}
+```{r, cache = TRUE}
 CompleteData <- RawData %>% filter(!is.na(WellsPlated))
 CompleteData <- CompleteData %>% mutate(TrueWellsPlated = WellsPlated - WellsCensored)
 CompleteData <- CompleteData %>% select(-WellsPlated, -WellsCensored)
@@ -82,7 +82,7 @@ head(CompletePercent)
 
 Trying to reshape data to allow for better analysis
 
-```{r}
+```{r, cache = TRUE}
 #Change Media type to a single letter
 CompletePercent <- CompletePercent %>% mutate(Media = str_sub(Media,1,1))
 #Concatenate some identifiers into a single field, then drop unused columns
@@ -95,21 +95,112 @@ head(CompleteConcat)
 CompleteTidy <- recast(CompleteConcat, LineID ~ Media_Day_Cells, id.var = c("LineID","Media_Day_Cells"), fun.aggregate = mean, na.rm = TRUE)
 head(CompleteTidy)
 #Output the results
-write.csv(CompleteTidy, file = "CompleteTidy.csv")
+#write.csv(CompleteTidy, file = "CompleteTidy.csv")
 ```
 
 Going to do some scatter plots to look for covariance between PE on day2 and day9 samples
 
-```{r}
+```{r, cache = TRUE}
 plot(CompleteTidy$`W_2_1`, CompleteTidy$`W_9_1`, xlab = "PE 2 Days post infection", ylab = "PE 9 Days post infection", xlim = 0:1, ylim = 0:1)
 abline(a = 0, b = 1, col = "darkblue")
 ```
 
 The PE of cell lines cluster, but not super related (IMO) which is expected.
 ## Adjusting Growth Percentage for Plating Efficiency
-```{r}
+```{r, cache = TRUE}
 summary(CompleteTidy)
 CompleteTidy <- CompleteTidy %>% mutate(R_2_1 = R_2_1 / W_2_1)
 summary(CompleteTidy)
+```
+
+## Installed statmod to use ELDA/limdil functions
+
+```{r}
+library(statmod)
+```
+
+Important considerations:  
+Observed = FALSE - indicates that we are dealing with a Poisson distribution, not a direct observation and confirmation of the plated cell number  
+
+ELDA doesn't seem to be taking into account Plating Efficiency, so we might have to do that on our own, adjusting the "plated" number accordingly
+
+**Going back to more raw dataset to undo some transformations**
+
+```{r, cache = TRUE}
+CompleteData <- CompleteData %>% mutate(LineID = paste(LineID, DaysPostInfection, sep = "_"))
+head(CompleteData)
+```
+
+Need to calculate PE for each Line + Plate series and add to all rows
+
+```{r, cache = TRUE}
+WehiPE <- CompleteData %>% filter(Media == "WEHI")
+head(WehiPE)
+WehiPE <- WehiPE %>% mutate(PE = WellsGrown / TrueWellsPlated)
+head(WehiPE)
+PEonly <- WehiPE %>% select(LineID, PE)
+head(PEonly)
+R10only <- CompleteData %>% filter(Media == "R10")
+R10PE <- merge(R10only, PEonly, by="LineID")
+head(R10PE)
+```
+Adjust Cells per Well by PE
+
+```{r}
+TidyData <- R10PE %>% mutate(PE_adjusted_cells = CellsPerWell * PE)
+head(TidyData)
+#write.csv(TidyData, file = "TidyData.csv")
+```
+Drop Samples 11 and 12 - Incomplete data due to plate contamination
+```{r}
+dim(TidyData)
+TidyData <- TidyData %>% filter(!LineNum_legacy == 11) %>% filter(!LineNum_legacy == 12)
+dim(TidyData)
+```
+
+
+
+Trial ELDA for 22_CSF2RB_R461C_2
+
+```{r}
+Trial <- TidyData %>% filter(LineNum_legacy == "22")
+Trialout <- elda(Trial$WellsGrown, Trial$PE_adjusted_cells, Trial$TrueWellsPlated, Trial$LineID, observed = FALSE, confidence = 0.95, test.unit.slope = TRUE)
+plot(Trialout)
+Trialout
+
+#See if I can't clean up this code
+Trialout2 <- elda(response = Trial$WellsGrown, dose = Trial$PE_adjusted_cells, tested = Trial$TrueWellsPlated, group = Trial$LineID, observed = FALSE, confidence = 0.95, test.unit.slope = TRUE)
+plot(Trialout2)
+
+```
+
+Massive ELDA
+
+```{r}
+MassELDA <- elda(response = TidyData$WellsGrown, dose = TidyData$PE_adjusted_cells, tested = TidyData$TrueWellsPlated, group = TidyData$LineID, observed = FALSE, confidence = 0.95, test.unit.slope = TRUE)
+plot(MassELDA)
+ELDACI <- as.data.frame(MassELDA$CI)
+head(ELDACI)
+ELDACI <- add_rownames(ELDACI, var = "LineID")
+ELDACI <- ELDACI %>% mutate(LineID = as.factor(LineID))
+#write.csv(MassELDA$CI, "ELDAConfIntervals.csv")
+TidyELDA <- merge(TidyData, ELDACI, by=1)
+head(TidyELDA)
+```
+Try to bin all runs together for ELDA
+```{r}
+TidyBin <- TidyData %>% mutate(Gene = paste(Transgene, Mutation, sep = "_"))
+head(TidyBin)
+BinELDA <- elda(response = TidyBin$WellsGrown, dose = TidyBin$PE_adjusted_cells, tested = TidyBin$TrueWellsPlated, group = TidyBin$Gene, observed = FALSE, confidence = 0.95, test.unit.slope = TRUE)
+BinCI <- as.data.frame(BinELDA$CI) %>% add_rownames(var = "LineID") %>% mutate(LineID = as.factor(LineID))
+#write.csv(BinCI, "BinnedELDACI.csv")
+```
+Bin together technical replicates (day 2 and day 9 samples)
+```{r}
+TidyBin2 <- TidyData %>% mutate(Gene = paste(Transgene, Mutation, LineNum_legacy, sep = "_"))
+head(TidyBin2)
+Bin2ELDA <- elda(response = TidyBin2$WellsGrown, dose = TidyBin2$PE_adjusted_cells, tested = TidyBin2$TrueWellsPlated, group = TidyBin2$Gene, observed = FALSE, confidence = 0.95, test.unit.slope = TRUE)
+Bin2CI <- as.data.frame(Bin2ELDA$CI) %>% add_rownames(var = "LineID") %>% mutate(LineID = as.factor(LineID))
+#write.csv(Bin2CI, "BinnedELDACI_3bins.csv")
 ```
 
