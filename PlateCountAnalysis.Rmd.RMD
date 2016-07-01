@@ -20,7 +20,7 @@ summary(RawData)
 
 We should start by getting an idea for Plating Efficiency (PE) from the WEHI wells
 
-```{r, cache = TRUE}
+```{r}
 WEHIonly <- RawData %>% filter(Media == "WEHI")
 summary(WEHIonly)
 WEHIcomplete <- WEHIonly %>% filter(!is.na(WellsGrown))
@@ -133,13 +133,39 @@ head(CompleteData)
 
 Need to calculate PE for each Line + Plate series and add to all rows
 
-```{r, cache = TRUE}
+```{r}
 WehiPE <- CompleteData %>% filter(Media == "WEHI")
 head(WehiPE)
-WehiPE <- WehiPE %>% mutate(PE = WellsGrown / TrueWellsPlated)
-head(WehiPE)
-PEonly <- WehiPE %>% select(LineID, PE)
+##THIS IS THE WRONG WAY TO CALCULATE PE!!! Doesn't assume Poisson distribution
+#WehiPE <- WehiPE %>% mutate(PE = WellsGrown / TrueWellsPlated)
+#head(WehiPE)
+
+WehiELDA <- elda(response = WehiPE$WellsGrown, dose = WehiPE$CellsPerWell, tested = WehiPE$TrueWellsPlated, group = WehiPE$LineID, observed = FALSE, confidence = 0.95, test.unit.slope = TRUE)
+WehiELDAest <- as.data.frame(WehiELDA$CI)
+head(WehiELDA)
+WehiELDAest <- add_rownames(WehiELDAest, var = "LineID")
+WehiELDAest <- WehiELDAest %>% mutate(LineID = as.factor(LineID))
+#write.csv(WehiELDAest, "WehiELDAConfIntervals.csv")
+
+#Drop Observations 11 and 12, incomplete due to contam
+WehiELDAest <- WehiELDAest[c(-3,-4),]
+head(WehiELDAest)
+Odd <- seq(1,50,2)
+Even <- seq(2,50,2)
+PE2d <- WehiELDAest[Odd,3]
+PE9d <- WehiELDAest[Even,3]
+plot(PE2d$Estimate, PE9d$Estimate, xlab = "PE 2 Days post infection", ylab = "PE 9 Days post infection", xlim = c(0.8,3.5), ylim = c(0.8,3.5))
+abline(a = 0, b = 1, col = "darkblue")
+
+#Need to clean up the LineID field
+WehiELDAest <- WehiELDAest %>% mutate(LineID = as.character(LineID))
+WehiELDAest$LineID <- substr(WehiELDAest$LineID,7,nchar(WehiELDAest$LineID))
+
+
+PEonly <- WehiELDAest %>% select(LineID, Estimate)
 head(PEonly)
+
+
 R10only <- CompleteData %>% filter(Media == "R10")
 R10PE <- merge(R10only, PEonly, by="LineID")
 head(R10PE)
@@ -147,7 +173,7 @@ head(R10PE)
 Adjust Cells per Well by PE
 
 ```{r}
-TidyData <- R10PE %>% mutate(PE_adjusted_cells = CellsPerWell * PE)
+TidyData <- R10PE %>% mutate(PE_adjusted_cells = CellsPerWell / Estimate)
 head(TidyData)
 #write.csv(TidyData, file = "TidyData.csv")
 ```
@@ -180,12 +206,14 @@ Massive ELDA
 MassELDA <- elda(response = TidyData$WellsGrown, dose = TidyData$PE_adjusted_cells, tested = TidyData$TrueWellsPlated, group = TidyData$LineID, observed = FALSE, confidence = 0.95, test.unit.slope = TRUE)
 plot(MassELDA)
 ELDACI <- as.data.frame(MassELDA$CI)
+
 head(ELDACI)
 ELDACI <- add_rownames(ELDACI, var = "LineID")
-ELDACI <- ELDACI %>% mutate(LineID = as.factor(LineID))
+ELDACI <- ELDACI %>% mutate(LineID = as.character(LineID))
 #write.csv(MassELDA$CI, "ELDAConfIntervals.csv")
-TidyELDA <- merge(TidyData, ELDACI, by=1)
-head(TidyELDA)
+##These lines below aren't running, but I also don't need them, not sure if they ever worked
+#TidyELDA <- merge(TidyData, ELDACI, by=1)
+#head(TidyELDA)
 ```
 Try to bin all runs together for ELDA
 ```{r}
