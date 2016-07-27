@@ -1,0 +1,149 @@
+---
+title: "Series78Analysis"
+author: "KMWS"
+date: "July 27, 2016"
+output: html_document
+---
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(reshape2)
+library(stringr)
+library(statmod)
+
+RawData <- read.csv("Series7_8_rawresults.csv")
+summary(RawData)
+
+RawComplete <- RawData %>% filter(!is.na(WellsGrown))
+summary(RawComplete)
+RawComplete <- RawComplete %>% mutate(LineDay = paste(LineNum_legacy, DaysPostInfection, sep = "_"))
+```
+
+
+```{r}
+WEHIonly <- RawComplete %>% filter(Media == "WEHI")
+summary(WEHIonly)
+WEHIcomplete <- WEHIonly %>% filter(!is.na(WellsGrown))
+Wpercents <- WEHIcomplete %>% transform(GrowthPercent = WellsGrown / WellsPlated)
+hist(Wpercents$GrowthPercent)
+```
+
+
+```{r, cache = TRUE}
+Wlowgrowth <- Wpercents %>% filter(GrowthPercent < 0.4)
+Wlowgrowth[1,c(1,5,6,9,10)]
+```
+Comparing PE of cells plated at 2 days and 9 days post-infection
+
+```{r, cache = TRUE}
+Wpercents2 <- Wpercents %>% filter(DaysPostInfection == 2)
+Wpercents9 <- Wpercents %>% filter(DaysPostInfection == 9)
+summary(Wpercents2)
+summary(Wpercents9)
+hist(Wpercents2$GrowthPercent, xlim = c(0.2,1), xlab = "Percent Growth 2 days post-infection", breaks = 8, main = "WEHI 2 days post infection")
+curve(dnorm(x, mean = mean(Wpercents2$GrowthPercent), sd = sd(Wpercents2$GrowthPercent)), add = TRUE, col = "darkblue", lwd = 2)
+hist(Wpercents9$GrowthPercent, xlim = c(0.2,1), xlab = "Percent Growth 9 days post-infection", breaks = 8, main = "WEHI 9 days post infection")
+curve(dnorm(x, mean = mean(Wpercents9$GrowthPercent), sd = sd(Wpercents9$GrowthPercent)), add = TRUE, col = "darkblue", lwd = 2)
+
+```
+
+### These runs are not representative of each other
+
+Need to calculate plating efficiency and adjust remaining counts accordingly
+
+```{r}
+
+WehiELDA <- elda(response = WEHIcomplete$WellsGrown, dose = WEHIcomplete$CellsPerWell, tested = WEHIcomplete$WellsPlated, group = WEHIcomplete$LineDay, observed = FALSE, confidence = 0.95, test.unit.slope = TRUE)
+
+WehiELDAest <- as.data.frame(WehiELDA$CI)
+head(WehiELDA)
+WehiELDAest <- add_rownames(WehiELDAest, var = "LineDay")
+WehiELDAest <- WehiELDAest %>% mutate(LineDay = as.factor(LineDay))
+#write.csv(WehiELDAest, "WehiELDAConfIntervalsSeries78.csv")
+
+#Need to clean up the LineID field
+WehiELDAest <- WehiELDAest %>% mutate(LineDay = as.character(LineDay))
+WehiELDAest$LineDay <- substr(WehiELDAest$LineDay,7,nchar(WehiELDAest$LineDay))
+
+#Extract the PE estimate
+PEonly <- WehiELDAest %>% select(LineDay, Estimate)
+PEonly <- PEonly %>% rename(PlatingEff = Estimate)
+head(PEonly)
+
+#Merge with the R10 data
+R10only <- RawComplete %>% filter(Media == "R10")
+R10PE <- merge(R10only, PEonly, by="LineDay")
+head(R10PE)
+
+PEadjusted <- R10PE %>% mutate(TrueCellsPerWell = CellsPerWell / PlatingEff)
+head(PEadjusted)
+
+
+```
+
+Calculate ELDA
+
+```{r}
+
+MassELDA <- elda(response = PEadjusted$WellsGrown, dose = PEadjusted$TrueCellsPerWell, tested = PEadjusted$WellsPlated, group = PEadjusted$LineDay, observed = FALSE, confidence = 0.95, test.unit.slope = TRUE)
+plot(MassELDA)
+ELDACI <- as.data.frame(MassELDA$CI)
+
+head(ELDACI)
+ELDACI <- add_rownames(ELDACI, var = "LineDay")
+ELDACI <- ELDACI %>% mutate(LineDay = as.character(LineDay))
+#write.csv(MassELDA$CI, "ELDAConfIntervalsSeries78.csv")
+
+
+```
+
+The numbers are highly inflated and inconsistent with earlier experiments
+I believe the concentration of IL-3 in the cells when plated might have been too high, resulting in excess IL-3 causing growth in too many 10,000 cell wells
+
+```{r}
+R10tenthousand <- R10only %>% filter(CellsPerWell == 10000)
+R10tenthousand[,c(3,4,6,9,10)]
+
+R10thousand <- R10only %>% filter(CellsPerWell == 1000)
+R10thousand[,c(3,4,6,9,10)]
+R10thousandDay2 <- R10thousand %>% filter(DaysPostInfection == 2)
+R10thousandDay2[,c(3,4,6,9,10)]
+
+```
+Cut all 10000 cell wells from analysis
+Cut 1,000 cell wells from Series 7 (Day 2)
+
+```{r}
+R10clean <- R10only %>% filter(!CellsPerWell == 10000)
+head(R10clean)
+Day2thousand <- R10clean$CellsPerWell == 1000 & R10clean$DaysPostInfection == 2
+dim(R10clean)
+R10cleaner <- R10clean[!Day2thousand,]
+head(R10cleaner)
+dim(R10cleaner)
+
+#Merge with PE values
+R10cleanerPE <- merge(R10cleaner, PEonly, by="LineDay")
+head(R10cleanerPE)
+
+R10cleanerPEadj <- R10cleanerPE %>% mutate(TrueCellsPerWell = CellsPerWell / PlatingEff)
+head(R10cleanerPEadj)
+
+```
+
+Newer ELDA on limited data set
+
+```{r}
+MassELDAclean <- elda(response = R10cleanerPEadj$WellsGrown, dose = R10cleanerPEadj$TrueCellsPerWell, tested = R10cleanerPEadj$WellsPlated, group = R10cleanerPEadj$LineDay, observed = FALSE, confidence = 0.95, test.unit.slope = TRUE)
+plot(MassELDAclean)
+ELDACIclean <- as.data.frame(MassELDAclean$CI)
+
+head(ELDACIclean)
+ELDACIclean <- add_rownames(ELDACIclean, var = "LineDay")
+ELDACIclean <- ELDACIclean %>% mutate(LineDay = as.character(LineDay))
+#write.csv(MassELDAclean$CI, "ELDAConfIntervalsSeries78Censored.csv")
+
+
+```
+
